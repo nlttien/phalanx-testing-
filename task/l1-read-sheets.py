@@ -1,8 +1,6 @@
-import csv
-import json
 import os
-import urllib.request
-import urllib.parse
+import pandas as pd
+import json
 
 def extract_sheet_id_from_url(url):
     start = url.find('/d/') + 3
@@ -11,126 +9,92 @@ def extract_sheet_id_from_url(url):
         return url[start:end]
     return None
 
-def read_google_sheet_csv(sheet_id, range_name='Sheet1!A:D'):
-    """
-    Read Google Sheets data using CSV export URL.
-    This method works for public sheets without authentication.
-    """
-    # Construct the CSV export URL
+def read_google_sheet_with_pandas(sheet_id):
     csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid=0"
     
     try:
-        # Download the CSV data
-        response = urllib.request.urlopen(csv_url)
-        csv_data = response.read().decode('utf-8')
-        
-        # Parse CSV data
-        csv_reader = csv.reader(csv_data.splitlines())
-        rows = list(csv_reader)
-        
-        return rows
+        df = pd.read_csv(csv_url)
+        return df
     except Exception as e:
-        print(f"Error reading Google Sheets: {e}")
         return None
 
-def extract_data_from_rows(rows):
-    if len(rows) < 2:
-        print("Sheet doesn't have enough rows")
+def extract_specific_data_with_pandas(df):
+    if df is None or df.empty:
         return None
     
-    data_row = rows[1] if len(rows) > 1 else None
-    
-    if not data_row or len(data_row) < 4:
-        print("Row 2 doesn't have enough columns")
+    if len(df) < 1:
         return None
     
-    data = {
-        "User Name": data_row[0] if len(data_row) > 0 else "",
-        "Email": data_row[1] if len(data_row) > 1 else "",
-        "Subject": data_row[2] if len(data_row) > 2 else "",
-        "Content": data_row[3] if len(data_row) > 3 else ""
-    }
-    
-    return data
-
-def create_json_file(data, filename):
     try:
-        # Ensure the data directory exists
-        os.makedirs(os.path.dirname(filename), exist_ok=True)
+        row_data = df.iloc[0]  
         
-        with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        data = {
+            "User Name": str(row_data.iloc[0]) if pd.notna(row_data.iloc[0]) and len(row_data) > 0 else "",
+            "Email": str(row_data.iloc[1]) if pd.notna(row_data.iloc[1]) and len(row_data) > 1 else "",
+            "Subject": str(row_data.iloc[2]) if pd.notna(row_data.iloc[2]) and len(row_data) > 2 else "",
+            "Content": str(row_data.iloc[3]) if pd.notna(row_data.iloc[3]) and len(row_data) > 3 else ""
+        }
         
-        print(f"JSON file created: {filename}")
-        return True
+        return data
     except Exception as e:
-        print(f"Error creating JSON file: {e}")
-        return False
+        return None
 
-def create_csv_file(data, filename):
+def create_output_files_with_pandas(data):
+    if not data:
+        return False, False
+    
+    os.makedirs("data", exist_ok=True)
+    
+    df = pd.DataFrame([data])
+    
     try:
-        os.makedirs(os.path.dirname(filename), exist_ok=True)
-        
-        with open(filename, 'w', newline='', encoding='utf-8') as f:
-            fieldnames = ["User Name", "Email", "Subject", "Content"]
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            
-            writer.writeheader()
-            
-            writer.writerow(data)
-        
-        print(f"CSV file created: {filename}")
-        return True
+        csv_filename = "data/basic_row.csv"
+        df.to_csv(csv_filename, index=False, encoding='utf-8')
+        csv_success = True
     except Exception as e:
-        print(f"Error creating CSV file: {e}")
-        return False
+        csv_success = False
+    
+    try:
+        json_filename = "data/basic_row.json"
+        json_data = df.iloc[0].to_dict() 
+        
+        with open(json_filename, 'w', encoding='utf-8') as f:
+            json.dump(json_data, f, ensure_ascii=False, indent=2)
+        
+        json_success = True
+    except Exception as e:
+        json_success = False
+    
+    return json_success, csv_success
 
 def main():
     sheet_url = "https://docs.google.com/spreadsheets/d/1lNsIW2A1gmurYZ-DJt65xuX_yEsxyvoqPx84Q2B8rEM/edit?gid=0#gid=0"
     
-    print("Starting Google Sheets data extraction...")
-    print(f"Source URL: {sheet_url}")
-    
-    # Extract sheet ID from URL
     sheet_id = extract_sheet_id_from_url(sheet_url)
     if not sheet_id:
-        print("Error: Could not extract sheet ID from URL")
         return False
     
-    print(f"Sheet ID: {sheet_id}")
     
-    # Read data from Google Sheets
-    rows = read_google_sheet_csv(sheet_id)
-    if not rows:
-        print("Error: Could not read data from Google Sheets")
+    # Read data using pandas
+    df = read_google_sheet_with_pandas(sheet_id)
+    if df is None:
         return False
-    
-    print(f"Read {len(rows)} rows from the sheet")
     
     # Extract the specific data we need
-    data = extract_data_from_rows(rows)
+    data = extract_specific_data_with_pandas(df)
     if not data:
-        print("Error: Could not extract required data from sheet")
         return False
     
-    print("Extracted data:")
     for key, value in data.items():
         print(f"  {key}: {value}")
     
-    # Create output files
-    json_filename = "data/basic_row.json"
-    csv_filename = "data/basic_row.csv"
-    
-    # Create JSON file
-    json_success = create_json_file(data, json_filename)
-    
-    # Create CSV file  
-    csv_success = create_csv_file(data, csv_filename)
+    # Create output files using pandas
+    json_success, csv_success = create_output_files_with_pandas(data)
     
     if json_success and csv_success:
         print("\nSuccessfully created both output files:")
-        print(f"  - {json_filename}")
-        print(f"  - {csv_filename}")
+        print("  - data/basic_row.json")
+        print("  - data/basic_row.csv")
         return True
     else:
         print("Error: Failed to create one or more output files")
