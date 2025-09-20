@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime
 from playwright.async_api import async_playwright
 from dotenv import load_dotenv
+from browser_manager import BrowserManager
 
 load_dotenv()
 
@@ -11,46 +12,39 @@ class SheetsEditHistoryCapture:
     def __init__(self, sheet_url, cdp_port=9222, profile_name="Default"):
         self.sheet_url = sheet_url
         self.history_data = {}
-        self.cdp_port = cdp_port
+        self.browser_manager = BrowserManager(cdp_port, debug=True)
         self.profile_name = profile_name
-        self.browser = None  
     
     async def check_cdp_connection(self):
-        try:
-            import aiohttp
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.get(f"http://localhost:{self.cdp_port}/json/version") as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        print(f"✅ Found browser: {data.get('Browser', 'Unknown')} via CDP")
-                        return True
-                    else:
-                        return False
-        except Exception as e:
-            print(f"No browser found on CDP port {self.cdp_port}: {e}")
-            return False
+        """Check CDP connection using enhanced browser manager"""
+        return await self.browser_manager.check_cdp_connection()
     
     async def setup_browser(self):
+        """Setup browser using enhanced browser manager"""
         try:
-            self.playwright = await async_playwright().start()
-            
-            self.browser = await self.playwright.chromium.connect_over_cdp("http://localhost:9222")
-            
-            self.context = self.browser.contexts[0] 
-            
-            self.page = self.context.pages[0]
+            success = await self.browser_manager.setup_browser()
+            if success:
+                print("✅ Browser setup completed successfully")
+                return True
+            else:
+                return False
         except Exception as e:
-            raise e
-        
-    async def navigate_to_sheet(self):
-        await self.page.goto(self.sheet_url)
-        
-        # Wait for page to load
-        await self.page.wait_for_timeout(8000)
-        
-        # Take screenshot for debugging
-        await self.page.screenshot(path="debug_sheet_loaded.png")
+            return False
+    
+    @property
+    def page(self):
+        """Get page from browser manager"""
+        return self.browser_manager.get_page()
+    
+    @property 
+    def browser(self):
+        """Get browser from browser manager"""
+        return self.browser_manager.get_browser()
+    
+    @property
+    def context(self):
+        """Get context from browser manager"""
+        return self.browser_manager.get_context()
     
     async def select_cell_using_name_box(self, cell_reference):
         try:
@@ -78,7 +72,7 @@ class SheetsEditHistoryCapture:
             
             if not name_box:
                 print("Could not find name box input")
-                await self.page.screenshot(path="debug_no_name_box.png")
+                await self.browser_manager.take_screenshot("debug_no_name_box", "Could not find name box input")
                 return False
             
             # Make sure name box is visible and clickable
@@ -103,7 +97,7 @@ class SheetsEditHistoryCapture:
             await self.page.wait_for_timeout(3000)
             
             # Take screenshot to verify selection
-            await self.page.screenshot(path=f"debug_cell_{cell_reference}_selected.png")
+            await self.browser_manager.take_screenshot(f"cell_{cell_reference}_selected", f"Cell {cell_reference} selected")
             
             # Verify cell is selected by checking if name box shows our cell reference
             try:
@@ -121,125 +115,40 @@ class SheetsEditHistoryCapture:
             
         except Exception as e:
             print(f"Error selecting cell {cell_reference}: {e}")
-            await self.page.screenshot(path=f"debug_select_cell_{cell_reference}_error.png")
+            await self.browser_manager.take_screenshot(f"select_cell_{cell_reference}_error", f"Error selecting cell {cell_reference}")
             return False
     
     async def right_click_selected_cell(self):
         try:
             await self.page.wait_for_timeout(1000)
             
-            await self.page.screenshot(path="debug_before_right_click.png")
-            
-            try:
-                await self.page.keyboard.press('Escape')
-                await self.page.wait_for_timeout(500)
-                await self.page.keyboard.press('Shift+F10')
-                await self.page.wait_for_timeout(2000)
-                
-                menu_items = await self.page.query_selector_all('[role="menuitem"], .goog-menuitem, .goog-menu-item')
-                if len(menu_items) > 0:
-                    print(f"✅ Context menu opened via keyboard with {len(menu_items)} items")
-                    await self.page.screenshot(path="debug_context_menu_keyboard.png")
-                    return True
-            except Exception as e:
-                print(f"Keyboard shortcut failed: {e}")
-            
-            try:
-                await self.page.evaluate("""
-                    const covers = document.querySelectorAll('.selection-border-cover');
-                    covers.forEach(cover => cover.style.pointerEvents = 'none');
-                """)
-                
-                elements = await self.page.query_selector_all('.active-cell-border')
-                if len(elements) > 0:
-                    print(f"Found {len(elements)} active cell border elements")
-                    await elements[0].click(button='right')
-                    await self.page.wait_for_timeout(2000)
-                    
-                    await self.page.evaluate("""
-                        const covers = document.querySelectorAll('.selection-border-cover');
-                        covers.forEach(cover => cover.style.pointerEvents = '');
-                    """)
-                    
-                    menu_items = await self.page.query_selector_all('[role="menuitem"], .goog-menuitem, .goog-menu-item')
-                    if len(menu_items) > 0:
-                        print(f"✅ Context menu opened after bypassing cover with {len(menu_items)} items")
-                        await self.page.screenshot(path="debug_context_menu_bypass.png")
-                        return True
-            except Exception as e:
-                print(f"Bypass method failed: {e}")
+            await self.browser_manager.take_screenshot("before_right_click", "Before right-clicking cell")
             
             try:
                 elements = await self.page.query_selector_all('.active-cell-border')
                 if len(elements) > 0:
                     print(f"Found {len(elements)} active cell border elements")
                     await elements[0].click(button='right', force=True)
-                    await self.page.wait_for_timeout(2000)
+                    await self.page.wait_for_timeout(1000)
                     
                     menu_items = await self.page.query_selector_all('[role="menuitem"], .goog-menuitem, .goog-menu-item')
                     if len(menu_items) > 0:
                         print(f"✅ Context menu opened with {len(menu_items)} items")
-                        await self.page.screenshot(path="debug_context_menu_success.png")
+                        await self.browser_manager.take_screenshot("context_menu_success", "Context menu opened successfully")
                         return True
             except Exception as e:
                 print(f"Force click failed: {e}")
             
-            try:
-                await self.page.keyboard.press('Escape')
-                await self.page.wait_for_timeout(500)
-                await self.page.keyboard.press('Shift+F10')
-                await self.page.wait_for_timeout(2000)
-                
-                menu_items = await self.page.query_selector_all('[role="menuitem"], .goog-menuitem, .goog-menu-item')
-                if len(menu_items) > 0:
-                    print(f"✅ Context menu opened via keyboard with {len(menu_items)} items")
-                    await self.page.screenshot(path="debug_context_menu_keyboard.png")
-                    return True
-            except Exception as e:
-                print(f"Keyboard shortcut failed: {e}")
-            
-            try:
-                name_box = await self.page.query_selector('input.waffle-name-box')
-                if name_box:
-                    current_cell = await name_box.input_value()
-                    print(f"Current selected cell: {current_cell}")
-                
-                grid_cells = await self.page.query_selector_all('.waffle-cell')
-                for cell in grid_cells[:10]: 
-                    try:
-                        if await cell.is_visible():
-                            box = await cell.bounding_box()
-                            if box:
-                                center_x = box['x'] + box['width'] / 2
-                                center_y = box['y'] + box['height'] / 2
-                                
-                                await self.page.mouse.click(center_x, center_y, button='right')
-                                print(f"Right-clicked at coordinates ({center_x}, {center_y})")
-                                await self.page.wait_for_timeout(2000)
-                                
-                                menu_items = await self.page.query_selector_all('[role="menuitem"], .goog-menuitem, .goog-menu-item')
-                                if len(menu_items) > 0:
-                                    print(f"✅ Context menu opened via coordinates with {len(menu_items)} items")
-                                    await self.page.screenshot(path="debug_context_menu_coordinates.png")
-                                    return True
-                                break
-                    except Exception as cell_error:
-                        continue
-            except Exception as coord_error:
-                print(f"Coordinate method failed: {coord_error}")
-            
-            print("Could not open context menu with any method")
-            await self.page.screenshot(path="debug_right_click_failed.png")
+            await self.browser_manager.take_screenshot("right_click_failed", "Right-click failed")
             return False
-                    
         except Exception as e:
             print(f"Error right-clicking selected cell: {e}")
-            await self.page.screenshot(path="debug_right_click_error.png")
+            await self.browser_manager.take_screenshot("right_click_error", "Error during right-click")
             return False
     
     async def click_show_edit_history(self):
         try:
-            await self.page.screenshot(path="debug_context_menu.png")
+            await self.browser_manager.take_screenshot("context_menu", "Context menu visible")
             
             # Look for edit history options
             edit_history_selectors = [
@@ -270,7 +179,7 @@ class SheetsEditHistoryCapture:
     
     async def extract_edit_history_data(self):
         try:
-            await self.page.screenshot(path="debug_edit_history.png")
+            await self.browser_manager.take_screenshot("edit_history", "Edit history panel opened")
             
             # Look for the blame view content
             blame_view_selector = '.docs-blameview-content'
@@ -341,12 +250,7 @@ class SheetsEditHistoryCapture:
             if not await self.click_show_edit_history():
                 return "", ""
             
-            # Step 4: Extract edit history data
             content, timestamp = await self.extract_edit_history_data()
-            
-            print(f"Captured data for {cell_reference}:")
-            print(f"  Content: {content}")
-            print(f"  Timestamp: {timestamp}")
             
             return content, timestamp
             
@@ -356,111 +260,140 @@ class SheetsEditHistoryCapture:
     
     async def capture_all_history(self):
         try:
-            await self.setup_browser()
+            # Setup browser with enhanced manager
+            if not await self.setup_browser():
+                print("❌ Failed to setup browser")
+                return
             
-            if not hasattr(self, 'page') or not self.page:
-                print("Error: Browser setup failed")
+            if not self.browser_manager.is_browser_ready():
+                print("❌ Browser is not ready")
                 return
             
             try:
-                await self.navigate_to_sheet()
+                # Navigate using enhanced navigation
+                success = await self.browser_manager.navigate_to_url(self.sheet_url, 8000)
+                if not success:
+                    print("❌ Failed to navigate to sheet")
+                    return
+                    
+                await self.browser_manager.take_screenshot("sheet_loaded", "Google Sheets loaded")
             except Exception as e:
-                print(f"Error navigating to sheet: {e}")
+                print(f"❌ Error navigating to sheet: {e}")
                 return
             
+            # Capture D2 edit history
             try:
+                print("📋 Capturing D2 cell edit history...")
                 d2_content, d2_timestamp = await self.capture_cell_edit_history("D2")
+                if d2_content:
+                    print(f"✅ D2 Content: {d2_content}")
+                else:
+                    print("⚠️ No D2 content found")
             except Exception as e:
-                print(f"Error capturing D2 history: {e}")
+                print(f"❌ Error capturing D2 history: {e}")
                 d2_content, d2_timestamp = "", ""
             
+            # Wait between operations
             await self.page.wait_for_timeout(3000)
             
             # Capture D7 edit history
             try:
+                print("📋 Capturing D7 cell edit history...")
                 d7_content, d7_timestamp = await self.capture_cell_edit_history("D7")
+                if d7_content:
+                    print(f"✅ D7 Content: {d7_content}")
+                else:
+                    print("⚠️ No D7 content found")
             except Exception as e:
-                print(f"Error capturing D7 history: {e}")
+                print(f"❌ Error capturing D7 history: {e}")
                 d7_content, d7_timestamp = "", ""
             
-            # Store results
+            # Store results with enhanced data structure
             self.history_data = {
                 "content_prev": d2_content or "No previous content found",
                 "timestamp_prev": d2_timestamp or "No timestamp found",
                 "requirements_prev": d7_content or "No previous requirements found",
                 "requirements_timestamp_prev": d7_timestamp or "No timestamp found",
                 "capture_date": datetime.now().isoformat(),
-                "method": "playwright_name_box_selection"
+                "method": "enhanced_playwright_automation",
+                "session_id": self.browser_manager.session_id,
+                "sheet_url": self.sheet_url
             }
             
+            # Log final results
+            print("\n📊 CAPTURE RESULTS:")
+            print("=" * 50)
             for key, value in self.history_data.items():
                 print(f"{key}: {value}")
+            print("=" * 50)
+            
+            # Take final screenshot
+            await self.browser_manager.take_screenshot("capture_completed", "Edit history capture completed")
             
         except Exception as e:
-            print(f"Error in capture process: {e}")
-            if hasattr(self, 'page'):
-                await self.page.screenshot(path="error_capture.png")
+            print(f"❌ Error in capture process: {e}")
+            await self.browser_manager.take_screenshot("error_capture", "Error during capture process")
         
         finally:
-            await self.cleanup_browser()
-
-    async def cleanup_browser(self):
-        try:
-            if hasattr(self, 'browser') and self.browser:
-                print("📌 CDP connection - keeping browser open for session persistence")
-            
-            if hasattr(self, 'playwright') and self.playwright:
-                await self.playwright.stop()
-                
-        except Exception as e:
-            print(f"⚠️ Error during cleanup: {e}")
+            await self.browser_manager.cleanup_browser(keep_browser_open=True)
     
     def save_history_data(self, filename="../data/history.json"):
+        """Save captured history data with enhanced error handling"""
         try:
-            os.makedirs(os.path.dirname(filename), exist_ok=True)
+            # Ensure data directory exists
+            data_dir = os.path.dirname(filename)
+            if data_dir:
+                os.makedirs(data_dir, exist_ok=True)
             
+            # Save with pretty formatting
             with open(filename, 'w', encoding='utf-8') as f:
                 json.dump(self.history_data, f, ensure_ascii=False, indent=2)
             
-            print(f"\nHistory data saved to: {filename}")
+            print(f"\n💾 History data saved to: {filename}")
+            print(f"📊 Captured {len(self.history_data)} data fields")
             return True
             
         except Exception as e:
-            print(f"Error saving history data: {e}")
+            print(f"❌ Error saving history data: {e}")
             return False
 
 async def main():
     sheet_url = os.getenv('SHEET_URL', "https://docs.google.com/spreadsheets/d/1lNsIW2A1gmurYZ-DJt65xuX_yEsxyvoqPx84Q2B8rEM/edit?gid=0#gid=0")
     
     if not sheet_url or sheet_url == "https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit":
+        print("❌ No valid sheet URL found")
         return
     
     print(f"📋 Using sheet URL from environment: {sheet_url}")
     
+    # Initialize capture with enhanced browser manager
     capture = SheetsEditHistoryCapture(sheet_url)
     
-    cdp_available = await capture.check_cdp_connection()
-    if cdp_available:
-        print("Connection priority: Using existing browser via CDP")
-    else:
-        print("Connection priority: Starting new persistent browser")
-    
     try:
+        # Check CDP connection first
+        cdp_available = await capture.check_cdp_connection()
+        if cdp_available:
+            print("🔗 Connection priority: Using existing browser via CDP")
+        else:
+            print("🚀 Connection priority: Starting new persistent browser")
+        
+        # Run the capture process
         await capture.capture_all_history()
         
+        # Save results
         success = capture.save_history_data()
         
         if success:
-            print("\\n Task completed successfully!")
+            print("\n✅ Task completed successfully!")
         else:
-            print("\\n Task completed with errors")
+            print("\n❌ Task completed with errors")
             
     except KeyboardInterrupt:
-        if hasattr(capture, 'cleanup_browser'):
-            await capture.cleanup_browser()
+        print("\n⏹️ Script interrupted by user")
+        await capture.browser_manager.cleanup_browser(keep_browser_open=True)
     except Exception as e:
-        if hasattr(capture, 'cleanup_browser'):
-            await capture.cleanup_browser()
+        print(f"\n❌ Unexpected error: {e}")
+        await capture.browser_manager.cleanup_browser(keep_browser_open=True)
 
 if __name__ == "__main__":
     try:
