@@ -3,397 +3,361 @@ import json
 import asyncio
 from datetime import datetime
 from playwright.async_api import async_playwright
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class SheetsEditHistoryCapture:
-    def __init__(self, sheet_url):
+    def __init__(self, sheet_url, cdp_port=9222, profile_name="Default"):
         self.sheet_url = sheet_url
         self.history_data = {}
+        self.cdp_port = cdp_port
+        self.profile_name = profile_name
+        self.browser = None  
+    
+    async def check_cdp_connection(self):
+        try:
+            import aiohttp
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"http://localhost:{self.cdp_port}/json/version") as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        print(f"✅ Found browser: {data.get('Browser', 'Unknown')} via CDP")
+                        return True
+                    else:
+                        return False
+        except Exception as e:
+            print(f"No browser found on CDP port {self.cdp_port}: {e}")
+            return False
     
     async def setup_browser(self):
         try:
             self.playwright = await async_playwright().start()
-            self.browser = await self.playwright.chromium.launch(
-                headless=True,  
-                slow_mo=1000   
-            )
-            self.context = await self.browser.new_context(
-                # Use newer Chrome user agent to avoid "browser not supported" warning
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            )
-            self.page = await self.context.new_page()
-            print("Browser setup completed successfully")
+            
+            self.browser = await self.playwright.chromium.connect_over_cdp("http://localhost:9222")
+            
+            self.context = self.browser.contexts[0] 
+            
+            self.page = self.context.pages[0]
         except Exception as e:
-            print(f"Error in browser setup: {e}")
-            await self.cleanup()
             raise e
         
     async def navigate_to_sheet(self):
         await self.page.goto(self.sheet_url)
         
-        # Debug: lấy title 
-        title = await self.page.title()
-        print(f"Page title: {title}")
-        
-        # Chờ đơn giản hơn
+        # Wait for page to load
         await self.page.wait_for_timeout(8000)
         
-        # Screenshot for debugging
-        await self.page.screenshot(path="debug_page_loaded.png")
-        print("Page screenshot saved")
-        
-        # Check for different cell selectors
-        selectors_to_check = [
-            'div[role="gridcell"]',
-            '.cell',
-            'td',
-            '[data-column]',
-            '.docs-sheet-cell',
-            '[aria-label*="cell"]'
-        ]
-        
-        for selector in selectors_to_check:
-            try:
-                elements = await self.page.query_selector_all(selector)
-                print(f"Selector '{selector}': found {len(elements)} elements")
-                if len(elements) > 0:
-                    break
-            except Exception as e:
-                print(f"Error with selector '{selector}': {e}")
-        
-        print("Navigation completed")
+        # Take screenshot for debugging
+        await self.page.screenshot(path="debug_sheet_loaded.png")
     
-    async def find_and_click_cell(self, cell_reference):
+    async def select_cell_using_name_box(self, cell_reference):
         try:
-            await self.page.wait_for_timeout(3000)
+            await self.page.wait_for_timeout(2000)
             
-            # Thử với các selector khác nhau
-            cell_selectors_to_try = [
-                f'[aria-label*="{cell_reference}"]',
-                f'td:nth-child(4)',  # Cột D (index 4)
-                'td',  # Generic td elements
-                'div[role="gridcell"]'
+            name_box_selectors = [
+                'input.waffle-name-box',
+                '#t-name-box',
+                'input[class*="waffle-name-box"]',
+                'input[id*="name-box"]',
+                '.jfk-textinput.waffle-name-box',
+                '[data-tooltip*="Name box"]',
+                'input[placeholder*="A1"]'
             ]
             
-            print(f"Looking for cell {cell_reference}")
-            
-            for selector in cell_selectors_to_try:
+            name_box = None
+            for selector in name_box_selectors:
                 try:
-                    elements = await self.page.query_selector_all(selector)
-                    print(f"Selector '{selector}': found {len(elements)} elements")
-                    
-                    if len(elements) > 0:
-                        if cell_reference == "D2":
-                            # Thử TD element đầu tiên cho D2
-                            target_index = min(3, len(elements) - 1)  # Cột D
-                        elif cell_reference == "D7":
-                            # Thử TD element thứ 7 cho D7  
-                            target_index = min(7, len(elements) - 1)
-                        else:
-                            target_index = 0
-                        
-                        if target_index < len(elements):
-                            print(f"Attempting to right-click element at index {target_index}")
-                            await elements[target_index].click(button='right')
-                            
-                            # Chờ context menu hiện
-                            await self.page.wait_for_timeout(2000)
-                            
-                            # Check if context menu appeared
-                            menu_items = await self.page.query_selector_all('[role="menuitem"], .goog-menuitem')
-                            print(f"Context menu items found: {len(menu_items)}")
-                            
-                            if len(menu_items) > 0:
-                                print(f"Successfully opened context menu for {cell_reference}")
-                                return True
-                            else:
-                                print("No context menu appeared, trying next selector")
-                                continue
-                                
-                except Exception as e:
-                    print(f"Error with selector '{selector}': {e}")
+                    name_box = await self.page.wait_for_selector(selector, timeout=5000)
+                    if name_box:
+                        print(f"Found name box with selector: {selector}")
+                        break
+                except:
                     continue
             
-            print(f"Failed to open context menu for {cell_reference}")
-            return False
-                
-        except Exception as e:
-            print(f"Error finding cell {cell_reference}: {e}")
-            return False
-    
-    async def capture_edit_history(self, cell_reference):
-        if not await self.find_and_click_cell(cell_reference):
-            print(f"Failed to find/click cell {cell_reference}")
-            return None, None
-        
-        await self.page.wait_for_timeout(3000)
-        
-        try:
-            # Screenshot context menu for debugging
-            await self.page.screenshot(path=f"debug_context_menu_{cell_reference}.png")
+            if not name_box:
+                print("Could not find name box input")
+                await self.page.screenshot(path="debug_no_name_box.png")
+                return False
             
-            # First, try to find edit history in the context menu
-            context_history_found = await self.try_context_menu_history()
+            # Make sure name box is visible and clickable
+            await name_box.scroll_into_view_if_needed()
             
-            if not context_history_found:
-                print("Edit history not found in context menu, trying main menu...")
-                # Try accessing history via main menu
-                await self.try_main_menu_history()
+            # Clear and enter cell reference
+            await name_box.click()
+            await self.page.wait_for_timeout(500)
             
+            # Select all and clear
+            await self.page.keyboard.press('Control+a')
+            await self.page.wait_for_timeout(200)
+            
+            # Type the cell reference
+            await name_box.type(cell_reference)
+            await self.page.wait_for_timeout(500)
+            
+            # Press Enter to navigate to cell
+            await self.page.keyboard.press('Enter')
+            
+            # Wait for cell to be selected
             await self.page.wait_for_timeout(3000)
             
-            # Try to extract history content
-            history_content = await self.extract_history_content()
+            # Take screenshot to verify selection
+            await self.page.screenshot(path=f"debug_cell_{cell_reference}_selected.png")
             
-            await self.close_edit_history_dialog()
+            # Verify cell is selected by checking if name box shows our cell reference
+            try:
+                current_value = await name_box.input_value()
+                if cell_reference.upper() in current_value.upper():
+                    print(f"✅ Cell {cell_reference} selected successfully (name box shows: {current_value})")
+                    return True
+                else:
+                    print(f"⚠️ Name box shows {current_value}, expected {cell_reference}")
+            except:
+                print("Could not verify name box value")
             
-            return history_content
+            print(f"Cell {cell_reference} selection completed")
+            return True
             
         except Exception as e:
-            print(f"Error in capture_edit_history for {cell_reference}: {e}")
-            await self.page.screenshot(path=f"error_{cell_reference}.png")
-            return None, None
+            print(f"Error selecting cell {cell_reference}: {e}")
+            await self.page.screenshot(path=f"debug_select_cell_{cell_reference}_error.png")
+            return False
     
-    async def try_context_menu_history(self):
-        """Try to find edit history in context menu"""
-        edit_history_selectors = [
-            'text="Show edit history"',
-            'text="View edit history"', 
-            'text="Edit history"',
-            'text~="history"',  # Fixed syntax
-            '[role="menuitem"]:has-text("history")',
-            '[role="menuitem"]:has-text("History")',
-            '[data-menu-action*="history"]',
-            '*:has-text("Show edit history")',
-        ]
-        
-        for i, selector in enumerate(edit_history_selectors):
+    async def right_click_selected_cell(self):
+        try:
+            await self.page.wait_for_timeout(1000)
+            
+            await self.page.screenshot(path="debug_before_right_click.png")
+            
             try:
-                print(f"Trying context menu selector {i+1}: {selector}")
-                element = await self.page.wait_for_selector(selector, timeout=1000)
-                if element:
-                    print(f"Found edit history in context menu with selector: {selector}")
-                    await element.click()
+                await self.page.keyboard.press('Escape')
+                await self.page.wait_for_timeout(500)
+                await self.page.keyboard.press('Shift+F10')
+                await self.page.wait_for_timeout(2000)
+                
+                menu_items = await self.page.query_selector_all('[role="menuitem"], .goog-menuitem, .goog-menu-item')
+                if len(menu_items) > 0:
+                    print(f"✅ Context menu opened via keyboard with {len(menu_items)} items")
+                    await self.page.screenshot(path="debug_context_menu_keyboard.png")
                     return True
             except Exception as e:
-                continue
-        
-        return False
-    
-    async def try_main_menu_history(self):
-        """Try to access history via main menu"""
-        try:
-            # Close context menu first
-            await self.page.keyboard.press('Escape')
-            await self.page.wait_for_timeout(1000)
+                print(f"Keyboard shortcut failed: {e}")
             
-            # Try File menu -> Version history
-            file_menu_selectors = [
-                'text="File"',
-                '[role="menuitem"]:has-text("File")',
-                'span:has-text("File")'
-            ]
-            
-            for selector in file_menu_selectors:
-                try:
-                    file_menu = await self.page.wait_for_selector(selector, timeout=2000)
-                    if file_menu:
-                        print("Found File menu, clicking...")
-                        await file_menu.click()
-                        await self.page.wait_for_timeout(1000)
-                        
-                        # Look for version history
-                        version_history_selectors = [
-                            'text="Version history"',
-                            'text="See version history"',
-                            '*:has-text("version history")',
-                            '*:has-text("Version history")'
-                        ]
-                        
-                        for vh_selector in version_history_selectors:
-                            try:
-                                vh_element = await self.page.wait_for_selector(vh_selector, timeout=2000)
-                                if vh_element:
-                                    print("Found Version history, clicking...")
-                                    await vh_element.click()
-                                    return True
-                            except:
-                                continue
-                        break
-                except:
-                    continue
-                    
-        except Exception as e:
-            print(f"Error accessing main menu history: {e}")
-        
-        return False
-    
-    async def extract_history_content(self):
-        try:
-            await self.page.wait_for_timeout(3000)
-            
-            print("Extracting history content...")
-            
-            # Take screenshot for debugging  
-            await self.page.screenshot(path="debug_history_dialog.png")
-            
-            # Look for version history dialog/panel
-            history_dialog_selectors = [
-                '[role="dialog"]',
-                '.version-history-panel',
-                '.docs-version-history',
-                '.version-history-container',
-                '[data-testid*="history"]',
-                '.docs-version-history-panel'
-            ]
-            
-            history_dialog = None
-            for selector in history_dialog_selectors:
-                try:
-                    dialog = await self.page.wait_for_selector(selector, timeout=2000)
-                    if dialog:
-                        print(f"Found history dialog with selector: {selector}")
-                        history_dialog = dialog
-                        break
-                except:
-                    continue
-            
-            if not history_dialog:
-                print("No specific history dialog found, trying to extract from page")
-                # If no specific dialog, try to extract version info from page
-                return await self.extract_version_info_from_page()
-            
-            # Extract content from history dialog
-            return await self.extract_content_from_dialog(history_dialog)
-            
-        except Exception as e:
-            print(f"Error extracting history content: {e}")
-            return "", ""
-    
-    async def extract_version_info_from_page(self):
-        """Extract version information when history panel is open"""
-        try:
-            # Look for version entries
-            version_selectors = [
-                '.docs-version-history-item',
-                '.version-item',
-                '[data-version-id]',
-                '.docs-version-history-entry',
-                '.history-entry'
-            ]
-            
-            previous_text = ""
-            timestamp = ""
-            
-            for selector in version_selectors:
-                try:
-                    versions = await self.page.query_selector_all(selector)
-                    print(f"Found {len(versions)} versions with selector: {selector}")
-                    
-                    if len(versions) > 1:  # Need at least 2 versions to get previous
-                        # Get the second version (previous edit)
-                        prev_version = versions[1]
-                        previous_text = await prev_version.inner_text()
-                        
-                        # Try to extract timestamp from the same element or nearby
-                        timestamp_selectors = [
-                            '.timestamp',
-                            '.date',
-                            '.time',
-                            '*[title*="ago"]',
-                            '*[title*="AM"]',
-                            '*[title*="PM"]'
-                        ]
-                        
-                        for ts_selector in timestamp_selectors:
-                            try:
-                                ts_element = await prev_version.query_selector(ts_selector)
-                                if ts_element:
-                                    timestamp = await ts_element.inner_text()
-                                    break
-                            except:
-                                continue
-                        
-                        if previous_text and timestamp:
-                            break
-                            
-                except Exception as e:
-                    print(f"Error with version selector {selector}: {e}")
-                    continue
-            
-            if not previous_text:
-                print("No version history found, this might be because:")
-                print("1. The document has no edit history")
-                print("2. The cell hasn't been edited before")
-                print("3. Insufficient permissions to view history")
+            try:
+                await self.page.evaluate("""
+                    const covers = document.querySelectorAll('.selection-border-cover');
+                    covers.forEach(cover => cover.style.pointerEvents = 'none');
+                """)
                 
-                # Return some default indication
-                previous_text = "No previous version found"
-                timestamp = "N/A"
+                elements = await self.page.query_selector_all('.active-cell-border')
+                if len(elements) > 0:
+                    print(f"Found {len(elements)} active cell border elements")
+                    await elements[0].click(button='right')
+                    await self.page.wait_for_timeout(2000)
+                    
+                    await self.page.evaluate("""
+                        const covers = document.querySelectorAll('.selection-border-cover');
+                        covers.forEach(cover => cover.style.pointerEvents = '');
+                    """)
+                    
+                    menu_items = await self.page.query_selector_all('[role="menuitem"], .goog-menuitem, .goog-menu-item')
+                    if len(menu_items) > 0:
+                        print(f"✅ Context menu opened after bypassing cover with {len(menu_items)} items")
+                        await self.page.screenshot(path="debug_context_menu_bypass.png")
+                        return True
+            except Exception as e:
+                print(f"Bypass method failed: {e}")
             
-            return previous_text.strip(), timestamp.strip()
+            try:
+                elements = await self.page.query_selector_all('.active-cell-border')
+                if len(elements) > 0:
+                    print(f"Found {len(elements)} active cell border elements")
+                    await elements[0].click(button='right', force=True)
+                    await self.page.wait_for_timeout(2000)
+                    
+                    menu_items = await self.page.query_selector_all('[role="menuitem"], .goog-menuitem, .goog-menu-item')
+                    if len(menu_items) > 0:
+                        print(f"✅ Context menu opened with {len(menu_items)} items")
+                        await self.page.screenshot(path="debug_context_menu_success.png")
+                        return True
+            except Exception as e:
+                print(f"Force click failed: {e}")
             
+            try:
+                await self.page.keyboard.press('Escape')
+                await self.page.wait_for_timeout(500)
+                await self.page.keyboard.press('Shift+F10')
+                await self.page.wait_for_timeout(2000)
+                
+                menu_items = await self.page.query_selector_all('[role="menuitem"], .goog-menuitem, .goog-menu-item')
+                if len(menu_items) > 0:
+                    print(f"✅ Context menu opened via keyboard with {len(menu_items)} items")
+                    await self.page.screenshot(path="debug_context_menu_keyboard.png")
+                    return True
+            except Exception as e:
+                print(f"Keyboard shortcut failed: {e}")
+            
+            try:
+                name_box = await self.page.query_selector('input.waffle-name-box')
+                if name_box:
+                    current_cell = await name_box.input_value()
+                    print(f"Current selected cell: {current_cell}")
+                
+                grid_cells = await self.page.query_selector_all('.waffle-cell')
+                for cell in grid_cells[:10]: 
+                    try:
+                        if await cell.is_visible():
+                            box = await cell.bounding_box()
+                            if box:
+                                center_x = box['x'] + box['width'] / 2
+                                center_y = box['y'] + box['height'] / 2
+                                
+                                await self.page.mouse.click(center_x, center_y, button='right')
+                                print(f"Right-clicked at coordinates ({center_x}, {center_y})")
+                                await self.page.wait_for_timeout(2000)
+                                
+                                menu_items = await self.page.query_selector_all('[role="menuitem"], .goog-menuitem, .goog-menu-item')
+                                if len(menu_items) > 0:
+                                    print(f"✅ Context menu opened via coordinates with {len(menu_items)} items")
+                                    await self.page.screenshot(path="debug_context_menu_coordinates.png")
+                                    return True
+                                break
+                    except Exception as cell_error:
+                        continue
+            except Exception as coord_error:
+                print(f"Coordinate method failed: {coord_error}")
+            
+            print("Could not open context menu with any method")
+            await self.page.screenshot(path="debug_right_click_failed.png")
+            return False
+                    
         except Exception as e:
-            print(f"Error extracting version info from page: {e}")
-            return "", ""
+            print(f"Error right-clicking selected cell: {e}")
+            await self.page.screenshot(path="debug_right_click_error.png")
+            return False
     
-    async def extract_content_from_dialog(self, dialog):
-        """Extract content from version history dialog"""
+    async def click_show_edit_history(self):
         try:
-            dialog_text = await dialog.inner_text()
-            print(f"Dialog content length: {len(dialog_text)}")
+            await self.page.screenshot(path="debug_context_menu.png")
             
-            # For now, return a portion of the dialog content
-            lines = dialog_text.split('\n')
-            content_lines = [line.strip() for line in lines if line.strip()]
-            
-            # Look for content that looks like previous edits
-            previous_text = ""
-            timestamp = ""
-            
-            for i, line in enumerate(content_lines):
-                if any(word in line.lower() for word in ['ago', 'am', 'pm', 'yesterday', 'today']):
-                    timestamp = line
-                    # The actual content might be nearby
-                    if i > 0:
-                        previous_text = content_lines[i-1]
-                    break
-            
-            return previous_text.strip(), timestamp.strip()
-            
-        except Exception as e:
-            print(f"Error extracting from dialog: {e}")
-            return "", ""
-    
-    async def close_edit_history_dialog(self):
-        try:
-            close_selectors = [
-                '[aria-label="Close"]',
-                '.close-button',
-                '[data-action="close"]',
-                'button:has-text("Close")',
-                '[role="button"]:has-text("×")',
+            # Look for edit history options
+            edit_history_selectors = [
+                'text="Show edit history"',
+                'text="Hiển thị lịch sử chỉnh sửa"',  # Vietnamese
+                'text="View edit history"',
+                '*:has-text("edit history")',
+                '*:has-text("lịch sử")',
+                '[role="menuitem"]:has-text("history")',
+                '[role="menuitem"]:has-text("lịch sử")'
             ]
             
-            for selector in close_selectors:
+            for selector in edit_history_selectors:
                 try:
-                    element = await self.page.wait_for_selector(selector, timeout=2000)
+                    element = await self.page.wait_for_selector(selector, timeout=3000)
                     if element:
+                        print(f"Found edit history option with selector: {selector}")
                         await element.click()
+                        await self.page.wait_for_timeout(3000)
+                        return True
+                except:
+                    continue
+            
+            return False
+        except Exception as e:
+            print(f"Error clicking show edit history: {e}")
+            return False
+    
+    async def extract_edit_history_data(self):
+        try:
+            await self.page.screenshot(path="debug_edit_history.png")
+            
+            # Look for the blame view content
+            blame_view_selector = '.docs-blameview-content'
+            blame_view = await self.page.wait_for_selector(blame_view_selector, timeout=5000)
+            
+            if not blame_view:
+                return "", ""
+            
+            timestamp = ""
+            timestamp_selectors = [
+                '.docs-blameview-timestamp',
+                '.docs-blameview-authortimestamp .docs-blameview-timestamp'
+            ]
+            
+            for selector in timestamp_selectors:
+                try:
+                    timestamp_element = await blame_view.query_selector(selector)
+                    if timestamp_element:
+                        timestamp = await timestamp_element.inner_text()
+                        print(f"Found timestamp: {timestamp}")
                         break
                 except:
                     continue
             
-            await self.page.keyboard.press('Escape')
-            await self.page.wait_for_timeout(1000)
+            content = ""
+            content_selectors = [
+                '.docs-blameview-value-content',
+                '.docs-blameview-valuecontainer .docs-blameview-value-content'
+            ]
+            
+            for selector in content_selectors:
+                try:
+                    content_element = await blame_view.query_selector(selector)
+                    if content_element:
+                        content = await content_element.inner_text()
+                        print(f"Found content: {content}")
+                        break
+                except:
+                    continue
+            
+            if not content and not timestamp:
+                all_text = await blame_view.inner_text()
+                print(f"Blame view full text: {all_text}")
+                
+                lines = all_text.split('\n')
+                for line in lines:
+                    if any(time_indicator in line for time_indicator in [':', 'tháng', 'AM', 'PM', 'ago']):
+                        if not timestamp:
+                            timestamp = line.strip()
+                    elif 'thay thế' in line.lower() or 'replaced' in line.lower():
+                        if not content:
+                            content = line.strip()
+            
+            return content.strip(), timestamp.strip()
             
         except Exception as e:
-            print(f"Error closing dialog: {e}")
+            print(f"Error extracting edit history data: {e}")
+            return "", ""
+    
+    async def capture_cell_edit_history(self, cell_reference):
+        try:
+            if not await self.select_cell_using_name_box(cell_reference):
+                return "", ""
+            
+            if not await self.right_click_selected_cell():
+                return "", ""
+            
+            if not await self.click_show_edit_history():
+                return "", ""
+            
+            # Step 4: Extract edit history data
+            content, timestamp = await self.extract_edit_history_data()
+            
+            print(f"Captured data for {cell_reference}:")
+            print(f"  Content: {content}")
+            print(f"  Timestamp: {timestamp}")
+            
+            return content, timestamp
+            
+        except Exception as e:
+            print(f"Error capturing edit history for {cell_reference}: {e}")
+            return "", ""
     
     async def capture_all_history(self):
         try:
             await self.setup_browser()
             
-            # Kiểm tra xem setup có thành công không
             if not hasattr(self, 'page') or not self.page:
                 print("Error: Browser setup failed")
                 return
@@ -405,65 +369,76 @@ class SheetsEditHistoryCapture:
                 return
             
             try:
-                d2_content, d2_timestamp = await self.capture_edit_history("D2")
+                d2_content, d2_timestamp = await self.capture_cell_edit_history("D2")
             except Exception as e:
                 print(f"Error capturing D2 history: {e}")
-                d2_content, d2_timestamp = None, None
+                d2_content, d2_timestamp = "", ""
             
             await self.page.wait_for_timeout(3000)
             
+            # Capture D7 edit history
             try:
-                d7_content, d7_timestamp = await self.capture_edit_history("D7")
+                d7_content, d7_timestamp = await self.capture_cell_edit_history("D7")
             except Exception as e:
                 print(f"Error capturing D7 history: {e}")
-                d7_content, d7_timestamp = None, None
+                d7_content, d7_timestamp = "", ""
             
+            # Store results
             self.history_data = {
-                "content_prev": d2_content or "",
-                "timestamp_prev": d2_timestamp or "",
-                "requirements_prev": d7_content or "",
-                "requirements_timestamp_prev": d7_timestamp or "",
-                "capture_date": datetime.now().isoformat()
+                "content_prev": d2_content or "No previous content found",
+                "timestamp_prev": d2_timestamp or "No timestamp found",
+                "requirements_prev": d7_content or "No previous requirements found",
+                "requirements_timestamp_prev": d7_timestamp or "No timestamp found",
+                "capture_date": datetime.now().isoformat(),
+                "method": "playwright_name_box_selection"
             }
             
             for key, value in self.history_data.items():
                 print(f"{key}: {value}")
             
         except Exception as e:
-            await self.page.screenshot(path="error_capture.png")
+            print(f"Error in capture process: {e}")
+            if hasattr(self, 'page'):
+                await self.page.screenshot(path="error_capture.png")
         
         finally:
-            await self.cleanup()
-    
-    async def cleanup(self):
+            await self.cleanup_browser()
+
+    async def cleanup_browser(self):
         try:
-            if hasattr(self, 'page'):
-                await self.page.close()
-            if hasattr(self, 'context'):
-                await self.context.close()
-            if hasattr(self, 'browser'):
-                await self.browser.close()
-            if hasattr(self, 'playwright'):
+            if hasattr(self, 'browser') and self.browser:
+                print("📌 CDP connection - keeping browser open for session persistence")
+            
+            if hasattr(self, 'playwright') and self.playwright:
                 await self.playwright.stop()
+                
         except Exception as e:
-            print(f"Error during cleanup: {e}")
+            print(f"⚠️ Error during cleanup: {e}")
     
-    def save_history_data(self, filename="data/history.json"):
+    def save_history_data(self, filename="../data/history.json"):
         try:
             os.makedirs(os.path.dirname(filename), exist_ok=True)
             
             with open(filename, 'w', encoding='utf-8') as f:
                 json.dump(self.history_data, f, ensure_ascii=False, indent=2)
             
+            print(f"\nHistory data saved to: {filename}")
             return True
             
         except Exception as e:
+            print(f"Error saving history data: {e}")
             return False
 
 async def main():
     sheet_url = "https://docs.google.com/spreadsheets/d/1lNsIW2A1gmurYZ-DJt65xuX_yEsxyvoqPx84Q2B8rEM/edit?gid=0#gid=0"
     
     capture = SheetsEditHistoryCapture(sheet_url)
+    
+    cdp_available = await capture.check_cdp_connection()
+    if cdp_available:
+        print("Connection priority: Using existing browser via CDP")
+    else:
+        print("Connection priority: Starting new persistent browser")
     
     try:
         await capture.capture_all_history()
@@ -475,8 +450,19 @@ async def main():
         else:
             print("\\n Task completed with errors")
             
+    except KeyboardInterrupt:
+        if hasattr(capture, 'cleanup_browser'):
+            await capture.cleanup_browser()
     except Exception as e:
-        print(f"\\n Fatal error: {e}")
+        if hasattr(capture, 'cleanup_browser'):
+            await capture.cleanup_browser()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nScript interrupted")
+    except Exception as e:
+        print(f"\nUnexpected error: {e}")
+    finally:
+        print("👋 Goodbye!")
