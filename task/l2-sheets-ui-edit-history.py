@@ -2,7 +2,6 @@ import os
 import json
 import asyncio
 from datetime import datetime
-from playwright.async_api import async_playwright
 from dotenv import load_dotenv
 from browser_manager import BrowserManager
 
@@ -16,11 +15,9 @@ class SheetsEditHistoryCapture:
         self.profile_name = profile_name
     
     async def check_cdp_connection(self):
-        """Check CDP connection using enhanced browser manager"""
         return await self.browser_manager.check_cdp_connection()
     
     async def setup_browser(self):
-        """Setup browser using enhanced browser manager"""
         try:
             success = await self.browser_manager.setup_browser()
             if success:
@@ -72,7 +69,6 @@ class SheetsEditHistoryCapture:
             
             if not name_box:
                 print("Could not find name box input")
-                await self.browser_manager.take_screenshot("debug_no_name_box", "Could not find name box input")
                 return False
             
             # Make sure name box is visible and clickable
@@ -96,17 +92,13 @@ class SheetsEditHistoryCapture:
             # Wait for cell to be selected
             await self.page.wait_for_timeout(3000)
             
-            # Take screenshot to verify selection
-            await self.browser_manager.take_screenshot(f"cell_{cell_reference}_selected", f"Cell {cell_reference} selected")
-            
             # Verify cell is selected by checking if name box shows our cell reference
             try:
                 current_value = await name_box.input_value()
                 if cell_reference.upper() in current_value.upper():
-                    print(f"✅ Cell {cell_reference} selected successfully (name box shows: {current_value})")
                     return True
                 else:
-                    print(f"⚠️ Name box shows {current_value}, expected {cell_reference}")
+                    print(f"Name box shows {current_value}, expected {cell_reference}")
             except:
                 print("Could not verify name box value")
             
@@ -115,14 +107,11 @@ class SheetsEditHistoryCapture:
             
         except Exception as e:
             print(f"Error selecting cell {cell_reference}: {e}")
-            await self.browser_manager.take_screenshot(f"select_cell_{cell_reference}_error", f"Error selecting cell {cell_reference}")
             return False
     
     async def right_click_selected_cell(self):
         try:
             await self.page.wait_for_timeout(1000)
-            
-            await self.browser_manager.take_screenshot("before_right_click", "Before right-clicking cell")
             
             try:
                 elements = await self.page.query_selector_all('.active-cell-border')
@@ -134,22 +123,17 @@ class SheetsEditHistoryCapture:
                     menu_items = await self.page.query_selector_all('[role="menuitem"], .goog-menuitem, .goog-menu-item')
                     if len(menu_items) > 0:
                         print(f"✅ Context menu opened with {len(menu_items)} items")
-                        await self.browser_manager.take_screenshot("context_menu_success", "Context menu opened successfully")
                         return True
             except Exception as e:
                 print(f"Force click failed: {e}")
             
-            await self.browser_manager.take_screenshot("right_click_failed", "Right-click failed")
             return False
         except Exception as e:
             print(f"Error right-clicking selected cell: {e}")
-            await self.browser_manager.take_screenshot("right_click_error", "Error during right-click")
             return False
     
     async def click_show_edit_history(self):
         try:
-            await self.browser_manager.take_screenshot("context_menu", "Context menu visible")
-            
             # Look for edit history options
             edit_history_selectors = [
                 'text="Show edit history"',
@@ -179,8 +163,6 @@ class SheetsEditHistoryCapture:
     
     async def extract_edit_history_data(self):
         try:
-            await self.browser_manager.take_screenshot("edit_history", "Edit history panel opened")
-            
             # Look for the blame view content
             blame_view_selector = '.docs-blameview-content'
             blame_view = await self.page.wait_for_selector(blame_view_selector, timeout=5000)
@@ -262,23 +244,23 @@ class SheetsEditHistoryCapture:
         try:
             # Setup browser with enhanced manager
             if not await self.setup_browser():
-                print("❌ Failed to setup browser")
+                print("Failed to setup browser")
                 return
             
             if not self.browser_manager.is_browser_ready():
-                print("❌ Browser is not ready")
+                print("Browser is not ready")
                 return
             
             try:
                 # Navigate using enhanced navigation
                 success = await self.browser_manager.navigate_to_url(self.sheet_url, 8000)
                 if not success:
-                    print("❌ Failed to navigate to sheet")
+                    print("Failed to navigate to sheet")
                     return
                     
                 await self.browser_manager.take_screenshot("sheet_loaded", "Google Sheets loaded")
             except Exception as e:
-                print(f"❌ Error navigating to sheet: {e}")
+                print(f"Error navigating to sheet: {e}")
                 return
             
             # Capture D2 edit history
@@ -290,7 +272,7 @@ class SheetsEditHistoryCapture:
                 else:
                     print("⚠️ No D2 content found")
             except Exception as e:
-                print(f"❌ Error capturing D2 history: {e}")
+                print(f"Error capturing D2 history: {e}")
                 d2_content, d2_timestamp = "", ""
             
             # Wait between operations
@@ -305,7 +287,7 @@ class SheetsEditHistoryCapture:
                 else:
                     print("⚠️ No D7 content found")
             except Exception as e:
-                print(f"❌ Error capturing D7 history: {e}")
+                print(f"Error capturing D7 history: {e}")
                 d7_content, d7_timestamp = "", ""
             
             # Store results with enhanced data structure
@@ -327,41 +309,49 @@ class SheetsEditHistoryCapture:
                 print(f"{key}: {value}")
             print("=" * 50)
             
-            # Take final screenshot
+            # Take final screenshot only
             await self.browser_manager.take_screenshot("capture_completed", "Edit history capture completed")
             
         except Exception as e:
-            print(f"❌ Error in capture process: {e}")
-            await self.browser_manager.take_screenshot("error_capture", "Error during capture process")
+            print(f"Error in capture process: {e}")
         
         finally:
             await self.browser_manager.cleanup_browser(keep_browser_open=True)
     
-    def save_history_data(self, filename="../data/history.json"):
-        """Save captured history data with enhanced error handling"""
+    def save_history_data(self, filename=None):
         try:
-            # Ensure data directory exists
+            if filename is None:
+                current_dir = os.path.dirname(os.path.abspath(__file__))
+                data_dir = os.path.join(os.path.dirname(current_dir), "data")
+                filename = os.path.join(data_dir, "history.json")
+            
             data_dir = os.path.dirname(filename)
             if data_dir:
                 os.makedirs(data_dir, exist_ok=True)
+                print(f"📁 Created/verified data directory: {data_dir}")
             
             # Save with pretty formatting
             with open(filename, 'w', encoding='utf-8') as f:
                 json.dump(self.history_data, f, ensure_ascii=False, indent=2)
             
-            print(f"\n💾 History data saved to: {filename}")
-            print(f"📊 Captured {len(self.history_data)} data fields")
-            return True
+            if os.path.exists(filename):
+                file_size = os.path.getsize(filename)
+                print(f"✅ File created successfully - Size: {file_size} bytes")
+                return True
+            else:
+                print("File was not created")
+                return False
             
         except Exception as e:
-            print(f"❌ Error saving history data: {e}")
+            print(f"Error saving history data: {e}")
+            print(f"Attempted path: {filename}")
             return False
 
 async def main():
     sheet_url = os.getenv('SHEET_URL', "https://docs.google.com/spreadsheets/d/1lNsIW2A1gmurYZ-DJt65xuX_yEsxyvoqPx84Q2B8rEM/edit?gid=0#gid=0")
     
     if not sheet_url or sheet_url == "https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit":
-        print("❌ No valid sheet URL found")
+        print("No valid sheet URL found")
         return
     
     print(f"📋 Using sheet URL from environment: {sheet_url}")
@@ -386,13 +376,13 @@ async def main():
         if success:
             print("\n✅ Task completed successfully!")
         else:
-            print("\n❌ Task completed with errors")
+            print("\nTask completed with errors")
             
     except KeyboardInterrupt:
         print("\n⏹️ Script interrupted by user")
         await capture.browser_manager.cleanup_browser(keep_browser_open=True)
     except Exception as e:
-        print(f"\n❌ Unexpected error: {e}")
+        print(f"\nUnexpected error: {e}")
         await capture.browser_manager.cleanup_browser(keep_browser_open=True)
 
 if __name__ == "__main__":
