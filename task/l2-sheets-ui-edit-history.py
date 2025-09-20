@@ -430,7 +430,12 @@ class SheetsEditHistoryCapture:
             return False
 
 async def main():
-    sheet_url = "https://docs.google.com/spreadsheets/d/1lNsIW2A1gmurYZ-DJt65xuX_yEsxyvoqPx84Q2B8rEM/edit?gid=0#gid=0"
+    sheet_url = os.getenv('SHEET_URL', "https://docs.google.com/spreadsheets/d/1lNsIW2A1gmurYZ-DJt65xuX_yEsxyvoqPx84Q2B8rEM/edit?gid=0#gid=0")
+    
+    if not sheet_url or sheet_url == "https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit":
+        return
+    
+    print(f"📋 Using sheet URL from environment: {sheet_url}")
     
     capture = SheetsEditHistoryCapture(sheet_url)
     
